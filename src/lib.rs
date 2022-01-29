@@ -1,11 +1,10 @@
 #![feature(result_contains_err)]
 #![feature(atomic_from_mut)]
 #![feature(array_methods)]
-
 #![allow(dead_code)]
 
-use std::{fmt, hint};
 use std::sync::atomic::{fence, AtomicU32, Ordering};
+use std::{fmt, hint};
 
 mod memzone;
 
@@ -20,7 +19,6 @@ pub mod flags {
 #[derive(Debug, PartialEq)]
 pub enum Error {
     InvalidIntialCount,
-    DequeueFromEmptyRing,
     Alloc(MemzoneError),
 }
 
@@ -43,8 +41,11 @@ struct HeadTail {
 
 impl HeadTail {
     fn new(st: SyncType) -> Self {
-
-        Self { head: 0, tail: 0, sync_type: st }
+        Self {
+            head: 0,
+            tail: 0,
+            sync_type: st,
+        }
     }
 
     fn new_producer(flags: u32) -> Self {
@@ -59,7 +60,8 @@ impl HeadTail {
     fn new_consumer(flags: u32) -> Self {
         let st = if flags & flags::SC_DEQ != 0 {
             SyncType::SingleThread
-        } else { SyncType::MultiThread
+        } else {
+            SyncType::MultiThread
         };
         HeadTail::new(st)
     }
@@ -81,9 +83,9 @@ impl HeadTail {
 }
 
 struct Ring<T>
-    where T: Default + Copy
+where
+    T: Default + Copy,
 {
-
     flags: u32,
     size: u32,
     mask: u32,
@@ -96,9 +98,9 @@ struct Ring<T>
 }
 
 impl<T> Ring<T>
-    where T: Default + Copy
+where
+    T: Default + Copy,
 {
-
     pub const SIZE_MASK: u32 = 0x7fffffffu32;
 
     pub fn new(mut count: u32, flags: u32) -> Result<Self, Error> {
@@ -137,17 +139,14 @@ impl<T> Ring<T>
     }
 
     pub fn free_count(&self) -> u32 {
-        // TODO: test
         self.capacity - self.count()
     }
 
     pub fn full(&self) -> bool {
-        // TODO: test
         self.free_count() == 0
     }
 
     pub fn empty(&self) -> bool {
-        // TODO: test
         self.prod.tail == self.cons.tail
     }
 
@@ -156,7 +155,6 @@ impl<T> Ring<T>
     }
 
     pub fn reset(&mut self) {
-        // TODO: test
         self.prod.reset();
         self.cons.reset();
     }
@@ -181,7 +179,8 @@ impl<T> Ring<T>
     }
 
     fn enqueue_bulk_impl(&mut self, els: &[T], st: SyncType) -> bool {
-        let (n, prod_head, prod_next) = self.move_prod_head(els.len() as u32, st, Behavior::QueueFixed);
+        let (n, prod_head, prod_next) =
+            self.move_prod_head(els.len() as u32, st, Behavior::QueueFixed);
         if n == 0 {
             return false;
         }
@@ -189,7 +188,7 @@ impl<T> Ring<T>
         self.enqueue_elems(prod_head, els);
 
         self.prod.update_tail(prod_head, prod_next, st);
-        return true;
+        true
     }
 
     fn move_prod_head(&mut self, mut n: u32, st: SyncType, behavior: Behavior) -> (u32, u32, u32) {
@@ -199,25 +198,23 @@ impl<T> Ring<T>
         let old_head = AtomicU32::from_mut(&mut self.prod.head).load(Ordering::Relaxed);
         let mut new_head: u32;
         loop {
-            /* Reset n to the initial burst count */
+            // Reset n to the initial burst count.
             n = max;
 
-            /* Ensure the head is read before tail */
+            // Ensure the head is read before tail.
             fence(Ordering::Acquire);
 
-            /* load-acquire synchronize with store-release of ht->tail
-            * in update_tail.
-            */
+            // Load-acquire synchronize with store-release of ht->tail
+            // in update_tail.
             let cons_tail = AtomicU32::from_mut(&mut self.cons.tail).load(Ordering::Acquire);
 
-            /* The subtraction is done between two unsigned 32bits value
-            * (the result is always modulo 32 bits even if we have
-            * *old_head > cons_tail). So 'free_entries' is always between 0
-            * and capacity (which is < size).
-            */
+            // The subtraction is done between two unsigned 32bits value
+            // (the result is always modulo 32 bits even if we have
+            // *old_head > cons_tail). So 'free_entries' is always between 0
+            // and capacity (which is < size).
             let free_entries: u32 = capacity + cons_tail - old_head;
 
-            /* check that we have enough room in ring */
+            // Check that we have enough room in ring.
             if n > free_entries {
                 n = if behavior == Behavior::QueueFixed {
                     0
@@ -235,7 +232,7 @@ impl<T> Ring<T>
                 self.prod.head = new_head;
                 true
             } else {
-                /* on failure, *old_head is updated */
+                // On failure, *old_head is updated.
                 AtomicU32::from_mut(&mut self.prod.head)
                     .compare_exchange(old_head, new_head, Ordering::Relaxed, Ordering::Relaxed)
                     .is_ok()
@@ -243,21 +240,25 @@ impl<T> Ring<T>
             if success {
                 break;
             }
-        };
-        return (n, old_head, new_head)
+        }
+        (n, old_head, new_head)
     }
 
     fn enqueue_elems(&mut self, prod_head: u32, els: &[T]) {
-        unsafe { std::ptr::copy_nonoverlapping(els.as_ptr(), self.mem.as_ptr().add(prod_head as usize), els.len()); }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                els.as_ptr(),
+                self.mem.as_ptr().add(prod_head as usize),
+                els.len(),
+            );
+        }
     }
 
     pub fn dequeue(&mut self) -> Option<T> {
         let mut el = std::mem::MaybeUninit::uninit();
         let mut els = unsafe { std::slice::from_raw_parts_mut(el.as_mut_ptr(), 1) };
         self.dequeue_bulk(&mut els)
-            .then(|| {
-                unsafe { el.assume_init() }
-            })
+            .then(|| unsafe { el.assume_init() })
     }
 
     pub fn dequeue_bulk(&mut self, els: &mut [T]) -> bool {
@@ -276,13 +277,14 @@ impl<T> Ring<T>
     }
 
     fn dequeue_bulk_impl(&mut self, els: &mut [T], st: SyncType) -> bool {
-        let (n, cons_head, cons_next) = self.move_cons_head(els.len() as u32, st, Behavior::QueueFixed);
+        let (n, cons_head, cons_next) =
+            self.move_cons_head(els.len() as u32, st, Behavior::QueueFixed);
         if n == 0 {
             return false;
         }
         self.dequeue_elems(cons_head, els);
         self.cons.update_tail(cons_head, cons_next, st);
-        return true;
+        true
     }
 
     fn move_cons_head(&mut self, mut n: u32, st: SyncType, behavior: Behavior) -> (u32, u32, u32) {
@@ -334,17 +336,24 @@ impl<T> Ring<T>
             if success {
                 break;
             }
-        };
-        return (n, old_head, new_head)
+        }
+        (n, old_head, new_head)
     }
 
     fn dequeue_elems(&mut self, cons_head: u32, els: &mut [T]) {
-        unsafe { std::ptr::copy_nonoverlapping(self.mem.as_ptr().add(cons_head as usize), els.as_mut_ptr(), els.len()); }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.mem.as_ptr().add(cons_head as usize),
+                els.as_mut_ptr(),
+                els.len(),
+            );
+        }
     }
 }
 
 impl<T> fmt::Display for Ring<T>
-    where T: Default + Copy
+where
+    T: Default + Copy,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "ring")?;
@@ -365,11 +374,11 @@ impl<T> fmt::Display for Ring<T>
 mod tests {
     use super::*;
 
-    fn ring_new_f(count: u32, flags: u32) -> Ring::<i32> {
+    fn ring_new_f(count: u32, flags: u32) -> Ring<i32> {
         Ring::<i32>::new(count, flags).unwrap()
     }
 
-    fn ring_new(count: u32) -> Ring::<i32> {
+    fn ring_new(count: u32) -> Ring<i32> {
         ring_new_f(count, 0)
     }
 
@@ -451,4 +460,3 @@ mod tests {
         assert_eq!(vec![2, 3], els);
     }
 }
-

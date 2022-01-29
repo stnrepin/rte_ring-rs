@@ -1,7 +1,7 @@
 //! Wrapper around raw pointer.
 
-use std::ptr::NonNull;
 use std::alloc::{alloc, Layout};
+use std::ptr::NonNull;
 
 #[derive(Debug, PartialEq)]
 pub enum MemzoneError {
@@ -45,4 +45,3 @@ impl<T> Memzone<T> {
 mod tests {
     // @todo
 }
-
