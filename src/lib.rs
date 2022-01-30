@@ -82,10 +82,7 @@ impl HeadTail {
     }
 }
 
-struct Ring<T>
-where
-    T: Default + Copy,
-{
+struct Ring<T> {
     flags: u32,
     size: u32,
     mask: u32,
