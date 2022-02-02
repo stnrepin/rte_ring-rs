@@ -164,8 +164,8 @@ where
 
     pub fn enqueue_bulk(&self, els: &[T]) -> bool {
         match self.prod.sync_type {
-            SyncType::MultiThread => self.enqueue_bulk_sp(els),
-            SyncType::SingleThread => self.enqueue_bulk_mp(els),
+            SyncType::MultiThread => self.enqueue_bulk_mp(els),
+            SyncType::SingleThread => self.enqueue_bulk_sp(els),
         }
     }
 
@@ -256,8 +256,8 @@ where
 
     pub fn dequeue_bulk(&self, els: &mut [T]) -> bool {
         match self.prod.sync_type {
-            SyncType::MultiThread => self.dequeue_bulk_sc(els),
-            SyncType::SingleThread => self.dequeue_bulk_mc(els),
+            SyncType::MultiThread => self.dequeue_bulk_mc(els),
+            SyncType::SingleThread => self.dequeue_bulk_sc(els),
         }
     }
 
