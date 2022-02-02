@@ -211,7 +211,7 @@ where
             // (the result is always modulo 32 bits even if we have
             // *old_head > cons_tail). So 'free_entries' is always between 0
             // and capacity (which is < size).
-            let free_entries: u32 = capacity + cons_tail - old_head;
+            let free_entries: u32 = capacity.overflowing_add(cons_tail).0.overflowing_sub(old_head).0;
 
             // Check that we have enough room in ring.
             if n > free_entries {
@@ -445,5 +445,31 @@ mod tests {
         let mut els = [0; 2];
         assert_eq!(r.dequeue_bulk(&mut els), true);
         assert_eq!(vec![2, 3], els);
+    }
+
+    #[test]
+    fn enqueue_more_than_size() {
+        let r = ring_new(4);
+
+        for e in 0..4 {
+            r.enqueue(e);
+        }
+
+        assert_eq!(r.enqueue(4), false);
+    }
+
+    #[test]
+    fn enqueue_bulk_more_than_size() {
+        let r = ring_new(4);
+
+        assert_eq!(r.enqueue_bulk(&[1, 2, 3, 4]), false);
+        assert_eq!(r.enqueue_bulk(&[1, 2, 3, 4, 5]), false);
+    }
+
+    #[test]
+    fn dequeue_from_empty() {
+        let r = ring_new(4);
+
+        assert_eq!(r.dequeue().is_none(), true);
     }
 }
