@@ -3,6 +3,10 @@
 #![feature(array_methods)]
 #![allow(dead_code)]
 
+#[doc = include_str!("../README.md")]
+#[cfg(doctest)]
+struct ReadmeDoctests;
+
 use std::sync::atomic::{fence, AtomicU32, Ordering};
 use std::{fmt, hint};
 
@@ -11,9 +15,10 @@ mod memzone;
 use crate::memzone::{Memzone, MemzoneError};
 
 pub mod flags {
-    pub const SP_ENQ: u32 = 0x0001;
-    pub const SC_DEQ: u32 = 0x0002;
-    pub const EXACT_SZ: u32 = 0x0004;
+    pub const NONE: u32 = 0x0;
+    pub const SP_ENQ: u32 = 0x1;
+    pub const SC_DEQ: u32 = 0x2;
+    pub const EXACT_SZ: u32 = 0x4;
 }
 
 #[derive(Debug, PartialEq)]
