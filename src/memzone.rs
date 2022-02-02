@@ -36,8 +36,33 @@ impl<T> Memzone<T> {
         self.len
     }
 
-    pub fn as_ptr(&mut self) -> *mut T {
-        self.addr.as_ptr()
+    pub unsafe fn as_ptr_at(&self, pos: usize) -> *const T {
+        self.addr.as_ptr().add(pos)
+    }
+
+    pub unsafe fn as_mut_ptr_at(&self, pos: usize) -> *mut T {
+        self.addr.as_ptr().add(pos).as_mut().unwrap()
+    }
+
+    // Все методы должны быть immutable
+    pub fn read_at(&self, pos: usize, els: &mut [T]) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.as_ptr_at(pos),
+                els.as_mut_ptr(),
+                els.len(),
+            );
+        }
+    }
+
+    pub fn write_at(&self, pos: usize, els: &[T]) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                els.as_ptr(),
+                self.as_mut_ptr_at(pos),
+                els.len(),
+            );
+        }
     }
 }
 

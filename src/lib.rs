@@ -34,16 +34,16 @@ pub enum Behavior {
 }
 
 struct HeadTail {
-    head: u32,
-    tail: u32,
+    head: AtomicU32,
+    tail: AtomicU32,
     sync_type: SyncType,
 }
 
 impl HeadTail {
     fn new(st: SyncType) -> Self {
         Self {
-            head: 0,
-            tail: 0,
+            head: AtomicU32::new(0),
+            tail: AtomicU32::new(0),
             sync_type: st,
         }
     }
@@ -66,23 +66,22 @@ impl HeadTail {
         HeadTail::new(st)
     }
 
-    fn reset(&mut self) {
-        self.head = 0;
-        self.tail = 0;
+    fn reset(&self) {
+        self.head.store(0, Ordering::Relaxed);
+        self.tail.store(0, Ordering::Relaxed);
     }
 
-    fn update_tail(&mut self, old_val: u32, new_val: u32, sync_type: SyncType) {
-        let tail = AtomicU32::from_mut(&mut self.tail);
+    fn update_tail(&self, old_val: u32, new_val: u32, sync_type: SyncType) {
         if sync_type == SyncType::MultiThread {
-            while tail.load(Ordering::Relaxed) != old_val {
+            while self.tail.load(Ordering::Relaxed) != old_val {
                 hint::spin_loop();
             }
         }
-        tail.store(new_val, Ordering::Release);
+        self.tail.store(new_val, Ordering::Release);
     }
 }
 
-struct Ring<T> {
+pub struct Ring<T> {
     flags: u32,
     size: u32,
     mask: u32,
@@ -93,6 +92,9 @@ struct Ring<T> {
 
     mem: Memzone<T>,
 }
+
+unsafe impl<T> Send for Ring<T> {}
+unsafe impl<T> Sync for Ring<T> {}
 
 impl<T> Ring<T>
 where
@@ -125,8 +127,8 @@ where
     }
 
     pub fn count(&self) -> u32 {
-        let prod_tail = self.prod.tail;
-        let cons_tail = self.cons.tail;
+        let prod_tail = self.prod.tail.load(Ordering::Relaxed);
+        let cons_tail = self.cons.tail.load(Ordering::Relaxed);
         let count = (prod_tail - cons_tail) & self.mask;
         if count > self.capacity {
             self.capacity
@@ -144,38 +146,38 @@ where
     }
 
     pub fn empty(&self) -> bool {
-        self.prod.tail == self.cons.tail
+        self.prod.tail.load(Ordering::Relaxed) == self.cons.tail.load(Ordering::Relaxed)
     }
 
     pub fn capacity(&self) -> u32 {
         self.capacity
     }
 
-    pub fn reset(&mut self) {
+    pub fn reset(&self) {
         self.prod.reset();
         self.cons.reset();
     }
 
-    pub fn enqueue(&mut self, el: T) -> bool {
+    pub fn enqueue(&self, el: T) -> bool {
         self.enqueue_bulk(std::slice::from_ref(&el))
     }
 
-    pub fn enqueue_bulk(&mut self, els: &[T]) -> bool {
+    pub fn enqueue_bulk(&self, els: &[T]) -> bool {
         match self.prod.sync_type {
             SyncType::MultiThread => self.enqueue_bulk_sp(els),
             SyncType::SingleThread => self.enqueue_bulk_mp(els),
         }
     }
 
-    pub fn enqueue_bulk_mp(&mut self, els: &[T]) -> bool {
+    pub fn enqueue_bulk_mp(&self, els: &[T]) -> bool {
         self.enqueue_bulk_impl(els, SyncType::MultiThread)
     }
 
-    pub fn enqueue_bulk_sp(&mut self, els: &[T]) -> bool {
+    pub fn enqueue_bulk_sp(&self, els: &[T]) -> bool {
         self.enqueue_bulk_impl(els, SyncType::SingleThread)
     }
 
-    fn enqueue_bulk_impl(&mut self, els: &[T], st: SyncType) -> bool {
+    fn enqueue_bulk_impl(&self, els: &[T], st: SyncType) -> bool {
         let (n, prod_head, prod_next) =
             self.move_prod_head(els.len() as u32, st, Behavior::QueueFixed);
         if n == 0 {
@@ -188,11 +190,11 @@ where
         true
     }
 
-    fn move_prod_head(&mut self, mut n: u32, st: SyncType, behavior: Behavior) -> (u32, u32, u32) {
+    fn move_prod_head(&self, mut n: u32, st: SyncType, behavior: Behavior) -> (u32, u32, u32) {
         let capacity = self.capacity;
         let max = n;
 
-        let old_head = AtomicU32::from_mut(&mut self.prod.head).load(Ordering::Relaxed);
+        let old_head = self.prod.head.load(Ordering::Relaxed);
         let mut new_head: u32;
         loop {
             // Reset n to the initial burst count.
@@ -203,7 +205,7 @@ where
 
             // Load-acquire synchronize with store-release of ht->tail
             // in update_tail.
-            let cons_tail = AtomicU32::from_mut(&mut self.cons.tail).load(Ordering::Acquire);
+            let cons_tail = self.cons.tail.load(Ordering::Acquire);
 
             // The subtraction is done between two unsigned 32bits value
             // (the result is always modulo 32 bits even if we have
@@ -226,11 +228,11 @@ where
 
             new_head = old_head + n;
             let success = if st == SyncType::SingleThread {
-                self.prod.head = new_head;
+                self.prod.head.store(new_head, Ordering::Relaxed);
                 true
             } else {
                 // On failure, *old_head is updated.
-                AtomicU32::from_mut(&mut self.prod.head)
+                self.prod.head
                     .compare_exchange(old_head, new_head, Ordering::Relaxed, Ordering::Relaxed)
                     .is_ok()
             };
@@ -241,39 +243,33 @@ where
         (n, old_head, new_head)
     }
 
-    fn enqueue_elems(&mut self, prod_head: u32, els: &[T]) {
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                els.as_ptr(),
-                self.mem.as_ptr().add(prod_head as usize),
-                els.len(),
-            );
-        }
+    fn enqueue_elems(&self, prod_head: u32, els: &[T]) {
+        self.mem.write_at(prod_head as usize, &els);
     }
 
-    pub fn dequeue(&mut self) -> Option<T> {
+    pub fn dequeue(&self) -> Option<T> {
         let mut el = std::mem::MaybeUninit::uninit();
         let mut els = unsafe { std::slice::from_raw_parts_mut(el.as_mut_ptr(), 1) };
         self.dequeue_bulk(&mut els)
             .then(|| unsafe { el.assume_init() })
     }
 
-    pub fn dequeue_bulk(&mut self, els: &mut [T]) -> bool {
+    pub fn dequeue_bulk(&self, els: &mut [T]) -> bool {
         match self.prod.sync_type {
             SyncType::MultiThread => self.dequeue_bulk_sc(els),
             SyncType::SingleThread => self.dequeue_bulk_mc(els),
         }
     }
 
-    pub fn dequeue_bulk_mc(&mut self, els: &mut [T]) -> bool {
+    pub fn dequeue_bulk_mc(&self, els: &mut [T]) -> bool {
         self.dequeue_bulk_impl(els, SyncType::MultiThread)
     }
 
-    pub fn dequeue_bulk_sc(&mut self, els: &mut [T]) -> bool {
+    pub fn dequeue_bulk_sc(&self, els: &mut [T]) -> bool {
         self.dequeue_bulk_impl(els, SyncType::SingleThread)
     }
 
-    fn dequeue_bulk_impl(&mut self, els: &mut [T], st: SyncType) -> bool {
+    fn dequeue_bulk_impl(&self, els: &mut [T], st: SyncType) -> bool {
         let (n, cons_head, cons_next) =
             self.move_cons_head(els.len() as u32, st, Behavior::QueueFixed);
         if n == 0 {
@@ -284,11 +280,11 @@ where
         true
     }
 
-    fn move_cons_head(&mut self, mut n: u32, st: SyncType, behavior: Behavior) -> (u32, u32, u32) {
+    fn move_cons_head(&self, mut n: u32, st: SyncType, behavior: Behavior) -> (u32, u32, u32) {
         let max = n;
 
         // Move cons.head atomically.
-        let old_head = AtomicU32::from_mut(&mut self.cons.head).load(Ordering::Relaxed);
+        let old_head = self.cons.head.load(Ordering::Relaxed);
         let mut new_head: u32;
         loop {
             // Restore n as it may change every loop.
@@ -299,7 +295,7 @@ where
 
             // This load-acquire synchronize with store-release of ht->tail
             // in update_tail.
-            let prod_tail = AtomicU32::from_mut(&mut self.prod.tail).load(Ordering::Acquire);
+            let prod_tail = self.prod.tail.load(Ordering::Acquire);
 
             // The subtraction is done between two unsigned 32bits value
             // (the result is always modulo 32 bits even if we have
@@ -322,11 +318,11 @@ where
 
             new_head = old_head + n;
             let success = if st == SyncType::SingleThread {
-                self.cons.head = new_head;
+                self.cons.head.store(new_head, Ordering::Relaxed);
                 true
             } else {
                 // On failure, *old_head will be updated.
-                AtomicU32::from_mut(&mut self.cons.head)
+                self.cons.head
                     .compare_exchange(old_head, new_head, Ordering::Relaxed, Ordering::Relaxed)
                     .is_ok()
             };
@@ -337,14 +333,8 @@ where
         (n, old_head, new_head)
     }
 
-    fn dequeue_elems(&mut self, cons_head: u32, els: &mut [T]) {
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                self.mem.as_ptr().add(cons_head as usize),
-                els.as_mut_ptr(),
-                els.len(),
-            );
-        }
+    fn dequeue_elems(&self, cons_head: u32, els: &mut [T]) {
+        self.mem.read_at(cons_head as usize, els);
     }
 }
 
@@ -357,10 +347,10 @@ where
         write!(f, "  flags={}\n", self.flags)?;
         write!(f, "  size={}\n", self.size)?;
         write!(f, "  capacity={}\n", self.capacity)?;
-        write!(f, "  ct={}\n", self.cons.tail)?;
-        write!(f, "  ch={}\n", self.cons.head)?;
-        write!(f, "  pt={}\n", self.prod.tail)?;
-        write!(f, "  ph={}\n", self.prod.head)?;
+        write!(f, "  ct={}\n", self.cons.tail.load(Ordering::Relaxed))?;
+        write!(f, "  ch={}\n", self.cons.head.load(Ordering::Relaxed))?;
+        write!(f, "  pt={}\n", self.prod.tail.load(Ordering::Relaxed))?;
+        write!(f, "  ph={}\n", self.prod.head.load(Ordering::Relaxed))?;
         write!(f, "  used={}\n", self.count())?;
         write!(f, "  avail={}\n", self.free_count())?;
         Ok(())
@@ -406,7 +396,7 @@ mod tests {
 
     #[test]
     fn enqueue_single_element_chages_size() {
-        let mut r = ring_new(4);
+        let r = ring_new(4);
         assert_eq!(r.enqueue(1), true);
         assert_eq!(r.count(), 1);
         assert_eq!(r.capacity(), 3);
@@ -414,14 +404,14 @@ mod tests {
 
     #[test]
     fn enqueue_bulk() {
-        let mut r = ring_new(4);
+        let r = ring_new(4);
         assert_eq!(r.enqueue_bulk(&[1, 2, 3]), true);
         assert_eq!(r.count(), 3);
     }
 
     #[test]
     fn reset() {
-        let mut r = ring_new(4);
+        let r = ring_new(4);
         assert_eq!(r.enqueue_bulk(&[1, 2]), true);
         assert_eq!(r.count(), 2);
 
@@ -433,14 +423,14 @@ mod tests {
 
     #[test]
     fn dequeue_from_empty_ring_raise_error() {
-        let mut r = ring_new(4);
+        let r = ring_new(4);
 
         assert_eq!(r.dequeue(), None);
     }
 
     #[test]
     fn enqueue_dequeue() {
-        let mut r = ring_new(4);
+        let r = ring_new(4);
         r.enqueue(5);
 
         let res = r.dequeue();
@@ -450,7 +440,7 @@ mod tests {
 
     #[test]
     fn enqueue_dequeue_bulk() {
-        let mut r = ring_new(4);
+        let r = ring_new(4);
         assert_eq!(r.enqueue_bulk(&[2, 3]), true);
         let mut els = [0; 2];
         assert_eq!(r.dequeue_bulk(&mut els), true);
