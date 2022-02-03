@@ -134,7 +134,7 @@ where
     pub fn count(&self) -> u32 {
         let prod_tail = self.prod.tail.load(Ordering::Relaxed);
         let cons_tail = self.cons.tail.load(Ordering::Relaxed);
-        let count = (prod_tail - cons_tail) & self.mask;
+        let count = (prod_tail.wrapping_sub(cons_tail)) & self.mask;
         if count > self.capacity {
             self.capacity
         } else {
@@ -216,7 +216,7 @@ where
             // (the result is always modulo 32 bits even if we have
             // *old_head > cons_tail). So 'free_entries' is always between 0
             // and capacity (which is < size).
-            let free_entries: u32 = capacity.overflowing_add(cons_tail).0.overflowing_sub(old_head).0;
+            let free_entries: u32 = capacity.wrapping_add(cons_tail).wrapping_sub(old_head);
 
             // Check that we have enough room in ring.
             if n > free_entries {
@@ -231,13 +231,14 @@ where
                 return (0, 0, 0);
             }
 
-            new_head = old_head + n;
+            new_head = old_head.wrapping_add(n);
             let success = if st == SyncType::SingleThread {
                 self.prod.head.store(new_head, Ordering::Relaxed);
                 true
             } else {
                 // On failure, *old_head is updated.
-                self.prod.head
+                self.prod
+                    .head
                     .compare_exchange(old_head, new_head, Ordering::Relaxed, Ordering::Relaxed)
                     .is_ok()
             };
@@ -306,7 +307,7 @@ where
             // (the result is always modulo 32 bits even if we have
             // cons_head > prod_tail). So 'entries' is always between 0
             // and size(ring)-1.
-            let entries: u32 = prod_tail - old_head;
+            let entries: u32 = prod_tail.wrapping_sub(old_head);
 
             // Set the actual entries for dequeue.
             if n > entries {
@@ -321,13 +322,14 @@ where
                 return (0, 0, 0);
             }
 
-            new_head = old_head + n;
+            new_head = old_head.wrapping_add(n);
             let success = if st == SyncType::SingleThread {
                 self.cons.head.store(new_head, Ordering::Relaxed);
                 true
             } else {
                 // On failure, *old_head will be updated.
-                self.cons.head
+                self.cons
+                    .head
                     .compare_exchange(old_head, new_head, Ordering::Relaxed, Ordering::Relaxed)
                     .is_ok()
             };
