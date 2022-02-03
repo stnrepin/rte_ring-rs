@@ -47,21 +47,18 @@ impl<T> Memzone<T> {
     // Все методы должны быть immutable
     pub fn read_at(&self, pos: usize, els: &mut [T]) {
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                self.as_ptr_at(pos),
-                els.as_mut_ptr(),
-                els.len(),
-            );
+            std::ptr::copy_nonoverlapping(self.as_ptr_at(pos), els.as_mut_ptr(), els.len());
         }
     }
 
     pub fn write_at(&self, pos: usize, els: &[T]) {
+        #[cfg(debug_assertions)]
+        if pos > self.len() {
+            panic!("invalid write at {} (len={})", pos, self.len());
+        }
+
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                els.as_ptr(),
-                self.as_mut_ptr_at(pos),
-                els.len(),
-            );
+            std::ptr::copy_nonoverlapping(els.as_ptr(), self.as_mut_ptr_at(pos), els.len());
         }
     }
 }

@@ -2,7 +2,6 @@
 #![feature(atomic_from_mut)]
 #![feature(array_methods)]
 #![allow(dead_code)]
-
 #[doc = include_str!("../README.md")]
 #[cfg(doctest)]
 struct ReadmeDoctests;
@@ -250,7 +249,8 @@ where
     }
 
     fn enqueue_elems(&self, prod_head: u32, els: &[T]) {
-        self.mem.write_at(prod_head as usize, &els);
+        let normalized_prod_head = prod_head & self.mask;
+        self.mem.write_at(normalized_prod_head as usize, &els);
     }
 
     pub fn dequeue(&self) -> Option<T> {
@@ -341,7 +341,8 @@ where
     }
 
     fn dequeue_elems(&self, cons_head: u32, els: &mut [T]) {
-        self.mem.read_at(cons_head as usize, els);
+        let normalized_cons_head = cons_head & self.mask;
+        self.mem.read_at(normalized_cons_head as usize, els);
     }
 }
 
@@ -373,7 +374,7 @@ mod tests {
     }
 
     fn ring_new(count: u32) -> Ring<i32> {
-        ring_new_f(count, 0)
+        ring_new_f(count, flags::NONE)
     }
 
     #[test]
@@ -466,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn enqueue_bulk_more_than_size() {
+    fn enqueue_bulk_more_than_size_raise_error() {
         let r = ring_new(4);
 
         assert_eq!(r.enqueue_bulk(&[1, 2, 3, 4]), false);
@@ -474,9 +475,27 @@ mod tests {
     }
 
     #[test]
-    fn dequeue_from_empty() {
+    fn enqueue_more_than_size_drops_new_elements() {
         let r = ring_new(4);
 
-        assert_eq!(r.dequeue().is_none(), true);
+        for e in 0..10 {
+            r.enqueue(e);
+        }
+
+        let mut els = [0; 3];
+        r.dequeue_bulk(&mut els);
+        assert_eq!(vec![0, 1, 2], els);
+    }
+
+    #[test]
+    fn head_tail_pointers_can_be_out_of_bound_of_0_size_of_ring() {
+        let r = ring_new(4);
+
+        for e in 0..50 {
+            r.enqueue(e);
+            r.dequeue();
+        }
+
+        assert_eq!(r.count(), 0);
     }
 }
